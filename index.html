@@ -12,37 +12,47 @@
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      height: 100vh;
+      min-height: 100vh;
       font-family: 'Courier New', monospace;
       color: #e8d5a3;
       overflow: hidden;
+    }
+    #game-container {
+      width: 100%;
+      max-width: 700px;
+      padding: 0 4px;
     }
     canvas {
       border: 1px solid #2a2a3a;
       border-radius: 4px;
       display: block;
+      width: 100%;
+      aspect-ratio: 700 / 380;
+      touch-action: none;
     }
     #ui {
-      width: 700px;
+      width: 100%;
       display: flex;
       justify-content: space-between;
       align-items: center;
       padding: 8px 4px;
-      font-size: 14px;
+      font-size: clamp(10px, 3vw, 14px);
       letter-spacing: 1px;
     }
-    #score { color: #f5d76e; font-size: 18px; font-weight: bold; }
+    #score { color: #f5d76e; font-size: clamp(12px, 4vw, 18px); font-weight: bold; }
     #lives { color: #e88; }
-    #hint { color: #666; font-size: 12px; }
+    #hint { color: #666; font-size: clamp(9px, 2.5vw, 12px); }
   </style>
 </head>
 <body>
-  <div id="ui">
-    <span id="score">LAMPS: 0</span>
-    <span id="lives">♥ ♥ ♥</span>
-    <span id="hint">HOLD SPACE / CLICK to flutter</span>
+  <div id="game-container">
+    <div id="ui">
+      <span id="score">LAMPS: 0</span>
+      <span id="lives">♥ ♥ ♥</span>
+      <span id="hint">HOLD SPACE / CLICK to flutter</span>
+    </div>
+    <canvas id="game" width="700" height="380"></canvas>
   </div>
-  <canvas id="game" width="700" height="380"></canvas>
 
   <script>
     const canvas = document.getElementById('game');
