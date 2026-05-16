@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Mothman</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #0a0a0f;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      font-family: 'Courier New', monospace;
+      color: #e8d5a3;
+      overflow: hidden;
+    }
+    canvas {
+      border: 1px solid #2a2a3a;
+      border-radius: 4px;
+      display: block;
+    }
+    #ui {
+      width: 700px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 4px;
+      font-size: 14px;
+      letter-spacing: 1px;
+    }
+    #score { color: #f5d76e; font-size: 18px; font-weight: bold; }
+    #lives { color: #e88; }
+    #hint { color: #666; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <div id="ui">
+    <span id="score">LAMPS: 0</span>
+    <span id="lives">♥ ♥ ♥</span>
+    <span id="hint">HOLD SPACE / CLICK to flutter</span>
+  </div>
+  <canvas id="game" width="700" height="380"></canvas>
+
+  <script>
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d');
+    const scoreEl = document.getElementById('score');
+    const livesEl = document.getElementById('lives');
+    const hintEl = document.getElementById('hint');
+
+    const W = canvas.width;
+    const H = canvas.height;
+
+    // --- constants ---
+    const GRAVITY = 0.28;
+    const FLUTTER_FORCE = -0.55;
+    const MAX_FALL = 6;
+    const MOTH_X = 120;
+    const GROUND_Y = H - 50;
+    const SCROLL_SPEED_BASE = 3;
+
+    // --- state ---
+    let state = 'start'; // start | playing | dead | gameover
+    let score = 0;
+    let lives = 3;
+    let hiScore = 0;
+    let frameCount = 0;
+    let scrollSpeed = SCROLL_SPEED_BASE;
+
+    // --- moth ---
+    const moth = {
+      x: MOTH_X,
+      y: H / 2,
+      vy: 0,
+      w: 36,
+      h: 22,
+      wingPhase: 0,
+      fluttering: false,
+      invincible: 0,
+      dead: false,
+    };
+
+    function resetMoth() {
+      moth.y = H / 2;
+      moth.vy = 0;
+      moth.invincible = 0;
+      moth.dead = false;
+    }
+
+    // --- objects ---
+    let lamps = [];
+    let webs = [];
+    let particles = [];
+    let stars = [];
+
+    function initStars() {
+      stars = [];
+      for (let i = 0; i < 80; i++) {
+        stars.push({
+          x: Math.random() * W,
+          y: Math.random() * H,
+          r: Math.random() * 1.2 + 0.3,
+          speed: Math.random() * 0.4 + 0.1,
+          alpha: Math.random() * 0.5 + 0.3,
+        });
+      }
+    }
+
+    function spawnLamp() {
+      const y = 60 + Math.random() * (GROUND_Y - 120);
+      lamps.push({ x: W + 30, y, w: 20, h: 30, collected: false, glowPhase: Math.random() * Math.PI * 2 });
+    }
+
+    function spawnWeb() {
+      const fromTop = Math.random() < 0.5;
+      const y = fromTop ? 0 : GROUND_Y - 80 - Math.random() * 60;
+      const h = 60 + Math.random() * 80;
+      webs.push({ x: W + 20, y, w: 18, h });
+    }
+
+    function spawnParticles(x, y, color, count) {
+      for (let i = 0; i < count; i++) {
+        const angle = Math.random() * Math.PI * 2;
+        const speed = 1 + Math.random() * 3;
+        particles.push({
+          x, y,
+          vx: Math.cos(angle) * speed,
+          vy: Math.sin(angle) * speed,
+          life: 1,
+          decay: 0.04 + Math.random() * 0.04,
+          r: 2 + Math.random() * 3,
+          color,
+        });
+      }
+    }
+
+    function resetGame() {
+      score = 0;
+      lives = 3;
+      scrollSpeed = SCROLL_SPEED_BASE;
+      frameCount = 0;
+      lamps = [];
+      webs = [];
+      particles = [];
+      resetMoth();
+      updateUI();
+    }
+
+    function updateUI() {
+      scoreEl.textContent = `LAMPS: ${score}`;
+      livesEl.textContent = '♥ '.repeat(lives).trim() || '☆';
+      hintEl.textContent = score > 0 ? `BEST: ${hiScore}` : 'HOLD SPACE / CLICK to flutter';
+    }
+
+    // --- input ---
+    let pressing = false;
+    document.addEventListener('keydown', e => {
+      if (e.code === 'Space') {
+        e.preventDefault();
+        pressing = true;
+        handleInput();
+      }
+    });
+    document.addEventListener('keyup', e => { if (e.code === 'Space') pressing = false; });
+    canvas.addEventListener('mousedown', () => { pressing = true; handleInput(); });
+    canvas.addEventListener('mouseup', () => { pressing = false; });
+    canvas.addEventListener('touchstart', e => { e.preventDefault(); pressing = true; handleInput(); }, { passive: false });
+    canvas.addEventListener('touchend', () => { pressing = false; });
+
+    function handleInput() {
+      if (state === 'start' || state === 'gameover') {
+        resetGame();
+        state = 'playing';
+      } else if (state === 'dead') {
+        state = 'playing';
+        resetMoth();
+      }
+    }
+
+    // --- collision ---
+    function rectsOverlap(ax, ay, aw, ah, bx, by, bw, bh) {
+      return ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by;
+    }
+
+    // --- draw helpers ---
+    function drawMoth(x, y, phase, alpha) {
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.translate(x, y);
+
+      // wings
+      const wingFlap = Math.sin(phase) * 0.6 + 0.4;
+      const wingSpread = moth.fluttering ? 1 : 0.7;
+
+      // upper wings
+      ctx.fillStyle = '#c8a96e';
+      ctx.beginPath();
+      ctx.ellipse(-10 * wingSpread, -8 * wingFlap, 14 * wingSpread, 9, -Math.PI / 5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.ellipse(10 * wingSpread, -8 * wingFlap, 14 * wingSpread, 9, Math.PI / 5, 0, Math.PI * 2);
+      ctx.fill();
+
+      // lower wings
+      ctx.fillStyle = '#a07840';
+      ctx.beginPath();
+      ctx.ellipse(-9 * wingSpread, 6 * wingFlap, 10 * wingSpread, 7, Math.PI / 6, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.ellipse(9 * wingSpread, 6 * wingFlap, 10 * wingSpread, 7, -Math.PI / 6, 0, Math.PI * 2);
+      ctx.fill();
+
+      // wing patterns
+      ctx.fillStyle = 'rgba(255,220,120,0.3)';
+      ctx.beginPath();
+      ctx.ellipse(-10 * wingSpread, -8 * wingFlap, 6, 4, -Math.PI / 5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.ellipse(10 * wingSpread, -8 * wingFlap, 6, 4, Math.PI / 5, 0, Math.PI * 2);
+      ctx.fill();
+
+      // body
+      ctx.fillStyle = '#7a5c32';
+      ctx.beginPath();
+      ctx.ellipse(0, 0, 5, 11, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      // eyes
+      ctx.fillStyle = '#f5d76e';
+      ctx.beginPath();
+      ctx.arc(-3, -7, 2, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(3, -7, 2, 0, Math.PI * 2);
+      ctx.fill();
+
+      // antennae
+      ctx.strokeStyle = '#a07840';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(-3, -9);
+      ctx.quadraticCurveTo(-10, -20, -7, -26);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(3, -9);
+      ctx.quadraticCurveTo(10, -20, 7, -26);
+      ctx.stroke();
+      // antennae tips
+      ctx.fillStyle = '#e8c060';
+      ctx.beginPath();
+      ctx.arc(-7, -26, 2, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(7, -26, 2, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.restore();
+    }
+
+    function drawLamp(lamp) {
+      const glow = 0.6 + 0.4 * Math.sin(lamp.glowPhase);
+      ctx.save();
+      ctx.translate(lamp.x, lamp.y);
+
+      // glow aura
+      const gradient = ctx.createRadialGradient(0, 5, 2, 0, 5, 40 * glow);
+      gradient.addColorStop(0, `rgba(255, 220, 80, ${0.3 * glow})`);
+      gradient.addColorStop(1, 'rgba(255, 200, 50, 0)');
+      ctx.fillStyle = gradient;
+      ctx.beginPath();
+      ctx.arc(0, 5, 40 * glow, 0, Math.PI * 2);
+      ctx.fill();
+
+      // lamp shade
+      ctx.fillStyle = '#8a7040';
+      ctx.beginPath();
+      ctx.moveTo(-10, 0);
+      ctx.lineTo(10, 0);
+      ctx.lineTo(7, 12);
+      ctx.lineTo(-7, 12);
+      ctx.closePath();
+      ctx.fill();
+
+      // bulb
+      ctx.fillStyle = `rgba(255, ${200 + 55 * glow}, ${50 * glow}, ${0.9 + 0.1 * glow})`;
+      ctx.beginPath();
+      ctx.arc(0, 16, 7, 0, Math.PI * 2);
+      ctx.fill();
+
+      // highlight
+      ctx.fillStyle = 'rgba(255,255,255,0.6)';
+      ctx.beginPath();
+      ctx.arc(-2, 13, 2, 0, Math.PI * 2);
+      ctx.fill();
+
+      // pole
+      ctx.strokeStyle = '#5a4a28';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(0, -lamp.h / 2);
+      ctx.lineTo(0, 0);
+      ctx.stroke();
+
+      ctx.restore();
+    }
+
+    function drawWeb(web) {
+      ctx.save();
+      ctx.translate(web.x, web.y);
+      ctx.strokeStyle = 'rgba(200, 200, 220, 0.6)';
+      ctx.lineWidth = 1;
+
+      // vertical strands
+      for (let i = 0; i < 5; i++) {
+        const xi = (i / 4) * web.w - web.w / 2;
+        ctx.beginPath();
+        ctx.moveTo(xi, 0);
+        ctx.lineTo(xi + (Math.random() - 0.5) * 4, web.h);
+        ctx.stroke();
+      }
+      // horizontal strands
+      for (let j = 1; j < 6; j++) {
+        const yi = (j / 6) * web.h;
+        ctx.beginPath();
+        ctx.moveTo(-web.w / 2, yi);
+        ctx.lineTo(web.w / 2, yi);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    function drawGround() {
+      // sky gradient strip at bottom
+      ctx.fillStyle = '#0d0d18';
+      ctx.fillRect(0, GROUND_Y, W, H - GROUND_Y);
+
+      ctx.strokeStyle = '#1e1e2e';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(0, GROUND_Y);
+      ctx.lineTo(W, GROUND_Y);
+      ctx.stroke();
+
+      // silhouette grass/terrain
+      ctx.fillStyle = '#111120';
+      ctx.beginPath();
+      ctx.moveTo(0, GROUND_Y + 10);
+      for (let x = 0; x < W; x += 20) {
+        ctx.lineTo(x + 10, GROUND_Y + 2 + Math.sin(x * 0.1 + frameCount * 0.02) * 4);
+        ctx.lineTo(x + 20, GROUND_Y + 10);
+      }
+      ctx.lineTo(W, H);
+      ctx.lineTo(0, H);
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    // --- update ---
+    function update() {
+      if (state !== 'playing') return;
+
+      frameCount++;
+      moth.wingPhase += 0.35;
+      moth.fluttering = pressing;
+
+      // increase speed over time
+      scrollSpeed = SCROLL_SPEED_BASE + Math.floor(score / 5) * 0.3;
+
+      // flutter / gravity
+      if (pressing) {
+        moth.vy += FLUTTER_FORCE;
+      }
+      moth.vy += GRAVITY;
+      moth.vy = Math.min(moth.vy, MAX_FALL);
+      moth.y += moth.vy;
+
+      // ceiling
+      if (moth.y < 20) { moth.y = 20; moth.vy = 0; }
+
+      // hit ground
+      if (moth.y > GROUND_Y - moth.h / 2) {
+        moth.y = GROUND_Y - moth.h / 2;
+        takeDamage();
+        return;
+      }
+
+      // lamps
+      lamps.forEach(l => {
+        l.x -= scrollSpeed;
+        l.glowPhase += 0.08;
+        if (!l.collected && rectsOverlap(
+          moth.x - moth.w / 2, moth.y - moth.h / 2, moth.w, moth.h,
+          l.x - 10, l.y - l.h / 2, 20, l.h
+        )) {
+          l.collected = true;
+          score++;
+          if (score > hiScore) hiScore = score;
+          spawnParticles(l.x, l.y, '#f5d76e', 10);
+          updateUI();
+        }
+      });
+      lamps = lamps.filter(l => l.x > -40);
+
+      // webs
+      if (moth.invincible <= 0) {
+        webs.forEach(w => {
+          if (rectsOverlap(
+            moth.x - moth.w / 2 + 4, moth.y - moth.h / 2 + 4, moth.w - 8, moth.h - 8,
+            w.x - w.w / 2, w.y, w.w, w.h
+          )) {
+            takeDamage();
+          }
+        });
+      }
+      webs.forEach(w => { w.x -= scrollSpeed; });
+      webs = webs.filter(w => w.x > -40);
+
+      // particles
+      particles.forEach(p => {
+        p.x += p.vx;
+        p.y += p.vy;
+        p.vy += 0.1;
+        p.life -= p.decay;
+      });
+      particles = particles.filter(p => p.life > 0);
+
+      // stars parallax
+      stars.forEach(s => { s.x -= s.speed; if (s.x < 0) s.x = W; });
+
+      // spawn schedule
+      if (frameCount % 90 === 0) spawnLamp();
+      if (frameCount % 140 === 0 && score > 2) spawnWeb();
+
+      // invincibility cooldown
+      if (moth.invincible > 0) moth.invincible--;
+    }
+
+    function takeDamage() {
+      if (moth.invincible > 0) return;
+      lives--;
+      updateUI();
+      spawnParticles(moth.x, moth.y, '#ff6666', 12);
+
+      if (lives <= 0) {
+        state = 'gameover';
+      } else {
+        moth.invincible = 90;
+        moth.vy = -3;
+      }
+    }
+
+    // --- draw ---
+    function draw() {
+      // background
+      const bg = ctx.createLinearGradient(0, 0, 0, H);
+      bg.addColorStop(0, '#05050f');
+      bg.addColorStop(1, '#0d0d22');
+      ctx.fillStyle = bg;
+      ctx.fillRect(0, 0, W, H);
+
+      // stars
+      stars.forEach(s => {
+        ctx.globalAlpha = s.alpha * (0.7 + 0.3 * Math.sin(frameCount * 0.03 + s.x));
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+        ctx.fill();
+      });
+      ctx.globalAlpha = 1;
+
+      drawGround();
+
+      // lamps
+      lamps.forEach(drawLamp);
+
+      // webs
+      webs.forEach(drawWeb);
+
+      // particles
+      particles.forEach(p => {
+        ctx.globalAlpha = p.life;
+        ctx.fillStyle = p.color;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+        ctx.fill();
+      });
+      ctx.globalAlpha = 1;
+
+      // moth — blink when invincible
+      const showMoth = moth.invincible === 0 || Math.floor(moth.invincible / 6) % 2 === 0;
+      if (showMoth) drawMoth(moth.x, moth.y, moth.wingPhase, 1);
+
+      // overlays
+      if (state === 'start') drawOverlay('MOTHMAN', 'Hold SPACE or click to begin', '#f5d76e');
+      if (state === 'gameover') drawOverlay('GAME OVER', `You collected ${score} lamp${score !== 1 ? 's' : ''}\nBest: ${hiScore}\n\nPress SPACE to try again`, '#ff8888');
+    }
+
+    function drawOverlay(title, subtitle, titleColor) {
+      ctx.fillStyle = 'rgba(5, 5, 15, 0.75)';
+      ctx.fillRect(0, 0, W, H);
+
+      ctx.textAlign = 'center';
+      ctx.fillStyle = titleColor;
+      ctx.font = 'bold 52px Courier New';
+      ctx.fillText(title, W / 2, H / 2 - 40);
+
+      ctx.fillStyle = '#c8b890';
+      ctx.font = '16px Courier New';
+      subtitle.split('\n').forEach((line, i) => {
+        ctx.fillText(line, W / 2, H / 2 + 10 + i * 24);
+      });
+    }
+
+    // --- loop ---
+    function loop() {
+      update();
+      draw();
+      requestAnimationFrame(loop);
+    }
+
+    initStars();
+    loop();
+  </script>
+</body>
+</html>
